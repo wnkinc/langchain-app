@@ -47,3 +47,6 @@ uvloop==0.21.0
 watchfiles==1.1.0
 websockets==15.0.1
 boto3
+langchain>=0.2
+langchain-community
+langchain-google-genai
