@@ -3,3 +3,10 @@ __pycache__/
 *.pyc
 .env
 .vscode/
+
+# Chainlit (keep config & assets, ignore local state)
+.chainlit/*
+!.chainlit/config.toml
+!.chainlit/theme.css
+!.chainlit/public/**
+!.chainlit/prompts/**

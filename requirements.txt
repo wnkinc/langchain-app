@@ -50,3 +50,4 @@ boto3
 langchain>=0.2
 langchain-community
 langchain-google-genai
+chainlit==2.8.0
