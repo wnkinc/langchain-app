@@ -23,9 +23,10 @@ def init_data_layer():
     storage = S3StorageClient(
         bucket=CHAINLIT_BUCKET,
         region_name=AWS_REGION,
+        # IMPORTANT: do NOT pass aws_access_key_id/secret here
         # With instance roles, keys are optional:
-        aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
-        aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+        # aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+        # aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
     )
     return DynamoDBDataLayer(
         table_name=CHAINLIT_TABLE,
