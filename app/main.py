@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException
+from chainlit import mount_chainlit
 from .schemas import QueryRequest, QueryResponse
 from .clients import get_os_client, get_llm, get_http_client
 from .retrieval import os_search, call_reranker
@@ -56,3 +57,7 @@ async def query(req: QueryRequest):
             for d in reranked
         ],
     )
+
+
+# Mount Chainlit UI+API at /chat (points to chainlit/cl_app.py's module path)
+mount_chainlit(app=app, path="/chat", target="chainlit.cl_app")

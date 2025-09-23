@@ -10,3 +10,5 @@ __pycache__/
 !.chainlit/theme.css
 !.chainlit/public/**
 !.chainlit/prompts/**
+
+.files/

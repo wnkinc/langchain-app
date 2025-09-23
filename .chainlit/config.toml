@@ -148,3 +148,30 @@ default_avatar_file_url = ""
 
 [meta]
 generated_by = "2.8.0"
+
+
+[project]
+name = "Bio-RAG"
+description = "RAG UI for OpenSearch + reranker + Gemini"
+# Session
+session_timeout = 3600
+max_steps = 200
+# CORS (UI/API)
+cors_origins = ["https://yourdomain.com", "https://www.yourdomain.com"]
+# Persist user-supplied secrets (usually false for prod)
+persist_secrets = false
+
+[ui]
+# Upload controls
+enable_file_upload = true
+max_upload_size_mb = 25
+# Branding (optional)
+name = "Bio-RAG Chat"
+# If you add a logo: put it in .chainlit/public/logo.png
+# logo = "/public/logo.png"
+
+[features]
+# Toggle optional features as needed
+enable_cache = true
+enable_audio = false
+enable_mcp = false

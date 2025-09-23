@@ -84,3 +84,15 @@ async def on_message(message: cl.Message):
                 )
             )
         await cl.Message(content="Sources:", elements=items).send()
+
+
+@cl.on_chat_start
+async def on_chat_start():
+    await cl.Message(content="Welcome to Bio-RAG 👋").send()
+
+
+# Simple password auth (example)
+@cl.password_auth_callback
+def auth(user: str, password: str) -> cl.AuthResult:
+    ok = user == "admin" and password == os.getenv("CHAINLIT_ADMIN_PASSWORD")
+    return cl.AuthResult(ok=ok, user=user if ok else None)
