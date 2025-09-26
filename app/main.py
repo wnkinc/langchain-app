@@ -35,29 +35,40 @@ def health():
 
 @app.post("/query", response_model=QueryResponse)
 async def query(req: QueryRequest):
-    raw = os_search(os_client, req.question, req.k)
+    # optional sanity caps
+    k = max(1, min(req.k or 50, 200))
+    top_k = max(1, min(req.top_k or 10, k))
+
+    raw = os_search(os_client, req.question, k)
     if not raw:
         return QueryResponse(answer="I couldn't find anything relevant.", sources=[])
-    reranked = await call_reranker(http, req.question, raw, req.top_k)
+
+    if http is None:
+        raise HTTPException(status_code=503, detail="HTTP client not ready")
+
+    reranked = await call_reranker(http, req.question, raw, top_k)
     context = render_context(reranked)
+
     try:
         answer = chain.invoke({"question": req.question, "context": context})
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Gemini (LangChain) error: {e}")
+
+    # Match actual OS fields (pmid/title/text + optional s3 origin)
     return QueryResponse(
-        answer=answer.strip(),
+        answer=(answer or "").strip(),
         sources=[
             {
                 "id": d.get("id"),
                 "score": d.get("score"),
                 "title": d.get("title"),
-                "url": d.get("url"),
-                "metadata": d.get("metadata"),
+                "pmid": d.get("pmid"),
+                "s3": d.get("s3"),
             }
             for d in reranked
         ],
     )
 
 
-# Mount Chainlit UI+API at /chat (points to chainlit/cl_app.py's module path)
+# Mount Chainlit UI+API at /chat
 mount_chainlit(app=app, path="/chat", target="chainlit.cl_app")
