@@ -1,5 +1,4 @@
 from fastapi import FastAPI, HTTPException
-from chainlit import mount_chainlit
 from .schemas import QueryRequest, QueryResponse
 from .clients import get_os_client, get_llm, get_http_client
 from .retrieval import os_search, call_reranker
@@ -54,7 +53,6 @@ async def query(req: QueryRequest):
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Gemini (LangChain) error: {e}")
 
-    # Match actual OS fields (pmid/title/text + optional s3 origin)
     return QueryResponse(
         answer=(answer or "").strip(),
         sources=[
@@ -68,7 +66,3 @@ async def query(req: QueryRequest):
             for d in reranked
         ],
     )
-
-
-# Mount Chainlit UI+API at /chat
-mount_chainlit(app=app, path="/chat", target="chainlit.cl_app")
