@@ -142,7 +142,7 @@ async def on_message(message: cl.Message):
 
     # Create a streaming message first
     msg = cl.Message(
-        content="", author="Assistant", stream=True, metadata={"session_id": SESSION_ID}
+        content="", author="Assistant", metadata={"session_id": SESSION_ID}
     )
     await msg.send()
 
@@ -151,11 +151,17 @@ async def on_message(message: cl.Message):
         try:
             # Streaming chain yields text chunks directly
             for chunk in chain.stream({"question": q, "context": context}):
-                streamed_any = True
+                # Handle different LC chunk types gracefully
                 if isinstance(chunk, str):
-                    await msg.stream_token(chunk)
+                    token = chunk
+                elif hasattr(chunk, "content"):
+                    token = getattr(chunk, "content") or ""
+                elif isinstance(chunk, dict):
+                    token = chunk.get("text") or chunk.get("content") or ""
                 else:
-                    await msg.stream_token(str(chunk))
+                    token = str(chunk)
+                if token:
+                    await msg.stream_token(token)
         except Exception:
             # Fallback to non-streaming
             try:
