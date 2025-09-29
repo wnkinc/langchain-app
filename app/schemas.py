@@ -16,6 +16,7 @@ class SourceItem(BaseModel):
     title: Optional[str] = None
     text: Optional[str] = None  # we'll often omit this in API response
     pmid: Optional[int] = None
+    url: Optional[str] = None
     s3: Optional[Dict[str, str]] = None  # {"bucket": "...", "key": "..."}
 
 

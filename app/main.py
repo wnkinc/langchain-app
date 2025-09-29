@@ -60,7 +60,7 @@ async def query(req: QueryRequest):
                 "id": d.get("id"),
                 "score": d.get("score"),
                 "title": d.get("title"),
-                "text": (lambda t: (t[:500] + "…") if t and len(t) > 500 else t)(
+                "text": (lambda t: (t[:250] + "…") if t and len(t) > 500 else t)(
                     d.get("text")
                 ),
                 "pmid": d.get("pmid"),
