@@ -169,16 +169,19 @@ async def on_message(message: cl.Message):
                 await msg.stream_token(full or "")
                 streamed_any = True
             except Exception as e:
-                await msg.update(content=f"LLM error: {e}")
+                msg.content = f"LLM error: {e}"
+                await msg.update()
                 return
 
         if not streamed_any:
             try:
                 full = chain.invoke({"question": q, "context": context})
             except Exception as e:
-                await msg.update(content=f"LLM error: {e}")
+                msg.content = f"LLM error: {e}"
+                await msg.update()
                 return
-            await msg.update(content=full or "")
+            msg.content = full or ""
+            await msg.update()
         else:
             await msg.update()  # finalize the streaming message
 
