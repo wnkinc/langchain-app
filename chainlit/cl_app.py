@@ -88,6 +88,24 @@ def _shorten(text: str, max_len: int = 1000) -> str:
     return (text[: max_len - 1] + "…") if len(text) > max_len else text
 
 
+def _ensure_text(value: Any) -> str:
+    """Coerce a langchain output or chunk into a plain string."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if hasattr(value, "content"):
+        content = getattr(value, "content")
+        if isinstance(content, str):
+            return content
+        return _ensure_text(content)
+    if isinstance(value, dict):
+        for key in ("text", "content", "message", "value"):
+            if key in value:
+                return _ensure_text(value[key])
+    return str(value)
+
+
 @cl.on_message
 async def on_message(message: cl.Message):
     """Search -> Rerank -> Build Context -> LLM (stream) -> Sources."""
@@ -155,26 +173,24 @@ async def on_message(message: cl.Message):
     with cl.Step(name="LLM") as llm_step:
         llm_step.input = {"question": q}  # keep it simple
         streamed_any = False
+        answer_chunks: List[str] = []
         try:
             # Streaming chain yields text chunks directly
             for chunk in chain.stream({"question": q, "context": context}):
                 # Handle different LC chunk types gracefully
-                if isinstance(chunk, str):
-                    token = chunk
-                elif hasattr(chunk, "content"):
-                    token = getattr(chunk, "content") or ""
-                elif isinstance(chunk, dict):
-                    token = chunk.get("text") or chunk.get("content") or ""
-                else:
-                    token = str(chunk)
+                token = _ensure_text(chunk)
                 if token:
                     await msg.stream_token(token)
+                    streamed_any = True
+                    answer_chunks.append(token)
         except Exception:
             # Fallback to non-streaming
             try:
                 full = chain.invoke({"question": q, "context": context})
-                await msg.stream_token(full or "")
+                full_text = _ensure_text(full)
+                await msg.stream_token(full_text)
                 streamed_any = True
+                answer_chunks = [full_text]
             except Exception as e:
                 msg.content = f"LLM error: {e}"
                 await msg.update()
@@ -189,14 +205,18 @@ async def on_message(message: cl.Message):
                 await msg.update()
                 llm_step.output = {"error": str(e)}
                 return
-            msg.content = full or ""
+            msg.content = _ensure_text(full)
+            answer_chunks = [msg.content]
             await msg.update()
         else:
+            msg.content = "".join(answer_chunks)
             await msg.update()  # finalize the streaming message
 
         # Keep a small breadcrumb in the step
-        llm_step.metadata = {"streamed": streamed_any}
-        llm_step.output = {"answer_preview": (msg.content or "")[:160]}
+        answer_text = _ensure_text(msg.content)
+        preview = _shorten(answer_text, 160)
+        llm_step.metadata = {"streamed": streamed_any, "answer_preview": preview}
+        llm_step.output = {"answer_preview": preview}
 
     # ---- STEP 4: SOURCES (elements + structured metadata) ----
     if reranked:
