@@ -1,5 +1,6 @@
+# app/chain.py
 import os
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -16,9 +17,24 @@ PROMPT = ChatPromptTemplate.from_template(
 )
 
 
-def build_chain(llm: ChatGoogleGenerativeAI):
-    # If you set temperature/max tokens in clients.get_llm(), that will apply here.
+def build_chain(llm: ChatGoogleGenerativeAI, **kwargs):
+    """
+    Returns a non-streaming chain (use .invoke).
+    Keeps StrOutputParser so the result is plain text.
+    """
+    if kwargs:
+        llm = llm.bind(**kwargs)
     return PROMPT.partial(system=SYSTEM_INSTRUCTIONS) | llm | StrOutputParser()
+
+
+def build_streaming_chain(llm: ChatGoogleGenerativeAI, **kwargs):
+    """
+    Returns a streaming chain (use .stream).
+    No StrOutputParser so chunks come through directly.
+    """
+    if kwargs:
+        llm = llm.bind(**kwargs)
+    return PROMPT.partial(system=SYSTEM_INSTRUCTIONS) | llm
 
 
 def render_context(docs: List[Dict[str, Any]]) -> str:
@@ -27,16 +43,13 @@ def render_context(docs: List[Dict[str, Any]]) -> str:
       expected keys: 'text', 'title', optional 'url', 'metadata' (may include 'PMID')
     We cap per-snippet length to avoid blowing up prompt size.
     """
-    max_chars = int(
-        os.getenv("CONTEXT_CHARS_PER_DOC", "1200")
-    )  # tweak via env if needed
+    max_chars = int(os.getenv("CONTEXT_CHARS_PER_DOC", "1200"))
     lines: List[str] = []
 
     for i, d in enumerate(docs, 1):
         title = (d.get("title") or "Untitled").strip()
         meta = d.get("metadata") or {}
-        pmid = meta.get("PMID") or meta.get("pmid") or d.get("PMID")
-        # Prefer explicit url; otherwise synthesize a PubMed link if we have a PMID.
+        pmid: Optional[str] = meta.get("PMID") or meta.get("pmid") or d.get("PMID")
         url = (
             d.get("url") or (f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/" if pmid else "")
         ).strip()

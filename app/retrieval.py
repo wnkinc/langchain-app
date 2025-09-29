@@ -188,8 +188,7 @@ async def call_reranker(
     http: httpx.AsyncClient, query: str, passages: List[Dict[str, Any]], top_k: int
 ) -> List[Dict[str, Any]]:
     """
-    Call your MedCPT (or similar) reranker. Expects the API to return a list of
-    {"id": <id>, "score": <float>} (or similar).
+    Call the reranker service. Returns top_k passages with reranker scores.
     """
     if not passages:
         return []
@@ -203,27 +202,23 @@ async def call_reranker(
     try:
         r = await http.post(RERANKER_URL, json=payload)
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Reranker request failed: {e}")
+        raise RuntimeError(f"Reranker request failed: {e}")
 
     if r.status_code != 200:
-        raise HTTPException(
-            status_code=502, detail=f"Reranker error {r.status_code}: {r.text}"
-        )
+        raise RuntimeError(f"Reranker error {r.status_code}: {r.text}")
 
     data = r.json()
-    reranked = data.get("reranked") or data.get("results") or []
+    indices = data.get("indices") or []
+    scores = data.get("scores") or []
 
-    # Merge reranker scores back onto the original passages, preserving title/pmid/etc.
-    by_id = {p.get("id"): p for p in passages if p.get("id") is not None}
-    merged: List[Dict[str, Any]] = []
-    for item in reranked[:top_k]:
-        base = by_id.get(item.get("id"), {})
-        if not base:
-            continue
-        merged.append({**base, **item})
+    reranked: List[Dict[str, Any]] = []
+    for idx, score in zip(indices, scores):
+        if 0 <= idx < len(passages):
+            base = passages[idx]
+            reranked.append({**base, "score": score})
 
-    # Fallback: if reranker returns nothing, just pass through the top_k
-    return merged or passages[:top_k]
+    # Fallback if nothing valid came back
+    return reranked or passages[:top_k]
 
 
 # Convenience orchestration (optional)
