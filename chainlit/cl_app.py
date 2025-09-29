@@ -102,14 +102,17 @@ async def on_message(message: cl.Message):
 
     # ---- STEP 1: SEARCH ----
     with cl.Step(name="Search") as search_step:
+        search_step.input = {"query": q, "k": k}  # primitives only
         try:
             raw: List[Dict[str, Any]] = await anyio.to_thread.run_sync(
                 os_search, os_client, q, k
             )
             search_step.metadata = {"k": k, "candidates_found": len(raw)}
         except Exception as e:
+            search_step.output = {"error": str(e)}
             await cl.Message(content=f"Search error: {e}").send()
             return
+        search_step.output = {"candidates_found": len(raw)}
 
     if not raw:
         await cl.Message(content="I couldn't find anything relevant.").send()
@@ -117,6 +120,7 @@ async def on_message(message: cl.Message):
 
     # ---- STEP 2: RERANK ----
     with cl.Step(name="Rerank") as rerank_step:
+        rerank_step.input = {"top_k": top_k}
         try:
             if http is None:
                 # Fallback safety: create a temp client if chat_start didn’t run
@@ -134,8 +138,10 @@ async def on_message(message: cl.Message):
                 "top_titles": [(_s.get("title") or "Untitled") for _s in reranked[:5]],
             }
         except Exception as e:
+            rerank_step.output = {"error": str(e)}
             await cl.Message(content=f"Reranker error: {e}").send()
             return
+        rerank_step.output = {"returned": len(reranked)}
 
     # ---- STEP 3: BUILD CONTEXT & STREAM LLM ----
     context = render_context(reranked)
@@ -147,6 +153,7 @@ async def on_message(message: cl.Message):
     await msg.send()
 
     with cl.Step(name="LLM") as llm_step:
+        llm_step.input = {"question": q}  # keep it simple
         streamed_any = False
         try:
             # Streaming chain yields text chunks directly
@@ -171,6 +178,7 @@ async def on_message(message: cl.Message):
             except Exception as e:
                 msg.content = f"LLM error: {e}"
                 await msg.update()
+                llm_step.output = {"error": str(e)}
                 return
 
         if not streamed_any:
@@ -179,6 +187,7 @@ async def on_message(message: cl.Message):
             except Exception as e:
                 msg.content = f"LLM error: {e}"
                 await msg.update()
+                llm_step.output = {"error": str(e)}
                 return
             msg.content = full or ""
             await msg.update()
@@ -187,6 +196,7 @@ async def on_message(message: cl.Message):
 
         # Keep a small breadcrumb in the step
         llm_step.metadata = {"streamed": streamed_any}
+        llm_step.output = {"answer_preview": (msg.content or "")[:160]}
 
     # ---- STEP 4: SOURCES (elements + structured metadata) ----
     if reranked:
@@ -234,8 +244,11 @@ async def on_message(message: cl.Message):
             )
 
         # Attach structured payload to the message metadata so it’s saved
-        await cl.Message(
-            content="Sources:",
-            elements=items,
-            metadata={"sources": structured_sources},
-        ).send()
+        with cl.Step(name="Sources") as sources_step:
+            sources_step.input = {"count": len(structured_sources)}
+            await cl.Message(
+                content="Sources:",
+                elements=items,
+                metadata={"sources": structured_sources},
+            ).send()
+            sources_step.output = {"count": len(structured_sources)}
