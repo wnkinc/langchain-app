@@ -6,12 +6,15 @@ import anyio
 import chainlit as cl
 from typing import Optional, List, Dict, Any
 
-# --- Reuse your app logic (no HTTP hop) ---
+# --- Reuse your app logic directly (no HTTP hop) ---
 from app.clients import get_os_client, get_llm, get_http_client
 from app.retrieval import os_search, call_reranker
-from app.chain import build_streaming_chain, render_context
+from app.chain import (
+    build_streaming_chain,
+    render_context,
+)  # build_streaming_chain should support .stream()
 
-# --- Data layer: ALWAYS enabled (env must be set) ---
+# --- Data layer: enabled when env is set ---
 import boto3
 from chainlit.data.dynamodb import DynamoDBDataLayer
 from chainlit.data.storage_clients.s3 import S3StorageClient
@@ -38,11 +41,76 @@ DEFAULT_K = int(os.getenv("SEARCH_K", "25"))
 DEFAULT_TOP_K = int(os.getenv("TOP_K", "5"))
 SESSION_ID = os.getenv("SESSION_ID", str(uuid.uuid4()))
 
-# --- Singletons reused by the steps ---
+# --- Singletons reused by steps ---
 os_client = get_os_client()
 llm = get_llm()
 chain = build_streaming_chain(llm)
 http = None  # async HTTP client for reranker
+
+
+def _cap(n: int, lo: int, hi: int) -> int:
+    return max(lo, min(n, hi))
+
+
+def _shorten(text: str, max_len: int = 1000) -> str:
+    if not text:
+        return ""
+    t = text.strip()
+    return (t[: max_len - 1] + "…") if len(t) > max_len else t
+
+
+def _ensure_text(value: Any) -> str:
+    """Coerce a LangChain output or chunk into plain string."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if hasattr(value, "content"):
+        content = getattr(value, "content")
+        if isinstance(content, str):
+            return content
+        return _ensure_text(content)
+    if isinstance(value, dict):
+        for key in ("text", "content", "message", "value"):
+            if key in value:
+                return _ensure_text(value[key])
+    return str(value)
+
+
+def _to_source_shape(d: Dict[str, Any]) -> Dict[str, Any]:
+    """Shape used for both Search step payload and final Sources list."""
+    pmid = d.get("pmid") or d.get("PMID")
+    url = d.get("url") or (f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/" if pmid else None)
+    text = d.get("text")
+    # Follow your exact rule: if len > 500, show first 250 + ellipsis; else full.
+    text_shaped = (text[:250] + "…") if (text and len(text) > 500) else text
+    return {
+        "id": d.get("id"),
+        "score": d.get("score"),
+        "title": d.get("title"),
+        "text": text_shaped,
+        "pmid": pmid,
+        "s3": d.get("s3"),
+        "url": url,
+    }
+
+
+def _render_sources_elements(sources: List[Dict[str, Any]]) -> List[cl.Text]:
+    """Render compact source chips as Chainlit elements."""
+    items: List[cl.Text] = []
+    for i, s in enumerate(sources, 1):
+        title = s.get("title") or f"Source {i}"
+        url = s.get("url") or "—"
+        # Per your snippet: prefer metadata.snippet, then text; cap to 500 here
+        snippet = (s.get("metadata", {}).get("snippet") or s.get("text") or "")[:500]
+        items.append(
+            cl.Text(
+                name=f"[{i}] {title}",
+                content=f"{snippet}\n\nURL: {url}",
+                display="inline",
+            )
+        )
+    return items
 
 
 @cl.on_chat_start
@@ -77,60 +145,38 @@ def auth(username: str, password: str) -> Optional[cl.User]:
     return None
 
 
-def _cap(n: int, lo: int, hi: int) -> int:
-    return max(lo, min(n, hi))
-
-
-def _shorten(text: str, max_len: int = 1000) -> str:
-    if not text:
-        return ""
-    text = text.strip()
-    return (text[: max_len - 1] + "…") if len(text) > max_len else text
-
-
-def _ensure_text(value: Any) -> str:
-    """Coerce a langchain output or chunk into a plain string."""
-    if value is None:
-        return ""
-    if isinstance(value, str):
-        return value
-    if hasattr(value, "content"):
-        content = getattr(value, "content")
-        if isinstance(content, str):
-            return content
-        return _ensure_text(content)
-    if isinstance(value, dict):
-        for key in ("text", "content", "message", "value"):
-            if key in value:
-                return _ensure_text(value[key])
-    return str(value)
-
-
 @cl.on_message
 async def on_message(message: cl.Message):
-    """Search -> Rerank -> Build Context -> LLM (stream) -> Sources."""
+    """
+    Pipeline:
+      Step 1 (Search): show ALL retriever candidates (the exact input to reranker)
+      Step 2 (Rerank): show reranked set
+      Then: stream final answer in a single bubble, and render Sources below
+    """
     q = (message.content or "").strip()
     if not q:
         await cl.Message(content="Ask me something!").send()
         return
 
-    # Per-message knobs (simple defaults; wire UI later if you want)
+    # knobs
     k = _cap(DEFAULT_K, 1, 200)
     top_k = _cap(DEFAULT_TOP_K, 1, k)
 
-    # ---- STEP 1: SEARCH ----
+    # ---- STEP 1: SEARCH (show ALL docs passed to reranker) ----
     with cl.Step(name="Search") as search_step:
-        search_step.input = {"query": q, "k": k}  # primitives only
+        search_step.input = {"query": q, "k": k}
         try:
             raw: List[Dict[str, Any]] = await anyio.to_thread.run_sync(
                 os_search, os_client, q, k
             )
-            search_step.metadata = {"k": k, "candidates_found": len(raw)}
+            # Emit *all* candidates in the step output (primitives only)
+            candidates = [_to_source_shape(doc) for doc in raw]
+            search_step.metadata = {"candidates_found": len(candidates)}
+            search_step.output = {"candidates": candidates}
         except Exception as e:
             search_step.output = {"error": str(e)}
             await cl.Message(content=f"Search error: {e}").send()
             return
-        search_step.output = {"candidates_found": len(raw)}
 
     if not raw:
         await cl.Message(content="I couldn't find anything relevant.").send()
@@ -141,134 +187,60 @@ async def on_message(message: cl.Message):
         rerank_step.input = {"top_k": top_k}
         try:
             if http is None:
-                # Fallback safety: create a temp client if chat_start didn’t run
-                from app.clients import get_http_client as _get_http_client
-
-                temp_http = _get_http_client()
+                # Safety fallback
+                temp_http = get_http_client()
                 reranked = await call_reranker(temp_http, q, raw, top_k)
                 await temp_http.aclose()
             else:
                 reranked = await call_reranker(http, q, raw, top_k)
-            # Persist counts and top titles for quick glance
+            reranked_view = [_to_source_shape(doc) for doc in reranked]
             rerank_step.metadata = {
-                "top_k": top_k,
-                "returned": len(reranked),
-                "top_titles": [(_s.get("title") or "Untitled") for _s in reranked[:5]],
+                "returned": len(reranked_view),
+                "top_titles": [s.get("title") or "Untitled" for s in reranked_view[:5]],
             }
+            rerank_step.output = {"results": reranked_view}
         except Exception as e:
             rerank_step.output = {"error": str(e)}
             await cl.Message(content=f"Reranker error: {e}").send()
             return
-        rerank_step.output = {"returned": len(reranked)}
 
-    # ---- STEP 3: BUILD CONTEXT & STREAM LLM ----
+    # ---- BUILD CONTEXT & STREAM ANSWER (NOT a step) ----
     context = render_context(reranked)
 
-    # Create a streaming message first
     msg = cl.Message(
         content="", author="Assistant", metadata={"session_id": SESSION_ID}
     )
     await msg.send()
 
-    with cl.Step(name="LLM") as llm_step:
-        llm_step.input = {"question": q}  # keep it simple
-        streamed_any = False
-        answer_chunks: List[str] = []
-        try:
-            # Streaming chain yields text chunks directly
-            for chunk in chain.stream({"question": q, "context": context}):
-                # Handle different LC chunk types gracefully
-                token = _ensure_text(chunk)
-                if token:
-                    await msg.stream_token(token)
-                    streamed_any = True
-                    answer_chunks.append(token)
-        except Exception:
-            # Fallback to non-streaming
-            try:
-                full = chain.invoke({"question": q, "context": context})
-                full_text = _ensure_text(full)
-                await msg.stream_token(full_text)
+    streamed_any = False
+    chunks: List[str] = []
+    try:
+        for chunk in chain.stream({"question": q, "context": context}):
+            token = _ensure_text(chunk)
+            if token:
+                await msg.stream_token(token)
                 streamed_any = True
-                answer_chunks = [full_text]
-            except Exception as e:
-                msg.content = f"LLM error: {e}"
-                await msg.update()
-                llm_step.output = {"error": str(e)}
-                return
+                chunks.append(token)
+    except Exception:
+        # Fallback to non-streaming
+        try:
+            full = chain.invoke({"question": q, "context": context})
+            full_text = _ensure_text(full)
+            await msg.stream_token(full_text)
+            streamed_any = True
+            chunks = [full_text]
+        except Exception as e:
+            await msg.update(content=f"LLM error: {e}")
+            return
 
-        if not streamed_any:
-            try:
-                full = chain.invoke({"question": q, "context": context})
-            except Exception as e:
-                msg.content = f"LLM error: {e}"
-                await msg.update()
-                llm_step.output = {"error": str(e)}
-                return
-            msg.content = _ensure_text(full)
-            answer_chunks = [msg.content]
-            await msg.update()
-        else:
-            msg.content = "".join(answer_chunks)
-            await msg.update()  # finalize the streaming message
+    if not streamed_any:
+        await msg.update(content="(No answer)")
+    else:
+        await msg.update(content="".join(chunks))
 
-        # Keep a small breadcrumb in the step
-        answer_text = _ensure_text(msg.content)
-        preview = _shorten(answer_text, 160)
-        llm_step.metadata = {"streamed": streamed_any, "answer_preview": preview}
-        llm_step.output = {"answer_preview": preview}
-
-    # ---- STEP 4: SOURCES (elements + structured metadata) ----
+    # ---- SOURCES (separate block, not a step) ----
     if reranked:
-        # Prepare structured payload so it’s queryable in the data layer
-        structured_sources: List[Dict[str, Any]] = []
-        items = []
-
-        for i, s in enumerate(reranked, 1):
-            title = (s.get("title") or f"Source {i}").strip()
-            url = s.get("url")
-            meta = s.get("metadata") or {}
-            pmid = meta.get("PMID") or meta.get("pmid") or s.get("PMID")
-            text = s.get("text") or meta.get("snippet") or ""
-            snippet = _shorten(text, 500)
-
-            # Save a user-visible element (stored by data layer)
-            header_lines = [f"[{i}] {title}"]
-            if pmid:
-                header_lines.append(f"(PMID: {pmid})")
-            if url:
-                header_lines.append(f"\nURL: {url}")
-            header = " ".join(header_lines)
-
-            items.append(
-                cl.Text(
-                    name=header,
-                    content=snippet,
-                    display="inline",
-                )
-            )
-
-            # Add a fully structured record for persistence/query
-            structured_sources.append(
-                {
-                    "idx": i,
-                    "id": s.get("id"),
-                    "score": s.get("score"),
-                    "title": title,
-                    "url": url,
-                    "pmid": pmid,
-                    "s3": s.get("s3"),
-                    "text": _shorten(s.get("text") or "", 2000),  # keep longer copy
-                    "metadata": meta,  # full metadata preserved
-                }
-            )
-
-        # Attach structured payload to the message metadata so it’s saved
-        with cl.Step(name="Sources") as sources_step:
-            sources_step.input = {"count": len(structured_sources)}
-            await cl.Message(
-                content="Sources:",
-                elements=items,
-                metadata={"sources": structured_sources},
-            ).send()
-            sources_step.output = {"count": len(structured_sources)}
+        final_sources = [_to_source_shape(d) for d in reranked]
+        elements = _render_sources_elements(final_sources)
+        if elements:
+            await cl.Message(content="Sources:", elements=elements).send()
