@@ -196,9 +196,7 @@ async def call_reranker(
 
     payload = {
         "query": query,
-        "passages": [
-            {"id": p.get("id"), "text": p["text"]} for p in passages if p.get("text")
-        ],
+        "candidates": [p["text"] for p in passages if p.get("text")],
         "top_k": top_k,
     }
 

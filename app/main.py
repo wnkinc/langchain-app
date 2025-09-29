@@ -60,8 +60,17 @@ async def query(req: QueryRequest):
                 "id": d.get("id"),
                 "score": d.get("score"),
                 "title": d.get("title"),
+                "text": (lambda t: (t[:500] + "…") if t and len(t) > 500 else t)(
+                    d.get("text")
+                ),
                 "pmid": d.get("pmid"),
                 "s3": d.get("s3"),
+                "url": d.get("url")
+                or (
+                    f"https://pubmed.ncbi.nlm.nih.gov/{d.get('pmid')}/"
+                    if d.get("pmid")
+                    else None
+                ),
             }
             for d in reranked
         ],
