@@ -82,7 +82,7 @@ def _to_source_shape(d: Dict[str, Any]) -> Dict[str, Any]:
     pmid = d.get("pmid") or d.get("PMID")
     url = d.get("url") or (f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/" if pmid else None)
     text = d.get("text")
-    # Follow your exact rule: if len > 500, show first 250 + ellipsis; else full.
+    # If len > 500, show first 250 + ellipsis; else full.
     text_shaped = (text[:250] + "…") if (text and len(text) > 500) else text
     return {
         "id": d.get("id"),
@@ -101,7 +101,7 @@ def _render_sources_elements(sources: List[Dict[str, Any]]) -> List[cl.Text]:
     for i, s in enumerate(sources, 1):
         title = s.get("title") or f"Source {i}"
         url = s.get("url") or "—"
-        # Per your snippet: prefer metadata.snippet, then text; cap to 500 here
+        # Prefer metadata.snippet, then text; cap to 500 here
         snippet = (s.get("metadata", {}).get("snippet") or s.get("text") or "")[:500]
         items.append(
             cl.Text(
@@ -230,13 +230,16 @@ async def on_message(message: cl.Message):
             streamed_any = True
             chunks = [full_text]
         except Exception as e:
-            await msg.update(content=f"LLM error: {e}")
+            msg.content = f"LLM error: {e}"
+            await msg.update()
             return
 
     if not streamed_any:
-        await msg.update(content="(No answer)")
+        msg.content = "(No answer)"
+        await msg.update()
     else:
-        await msg.update(content="".join(chunks))
+        msg.content = "".join(chunks)
+        await msg.update()
 
     # ---- SOURCES (separate block, not a step) ----
     if reranked:
