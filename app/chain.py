@@ -5,6 +5,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_google_genai import ChatGoogleGenerativeAI
 
+# --- System instructions ---
 # Keep answers short, grounded, and with bracket-number citations that
 # correspond exactly to the context snippets we pass in.
 SYSTEM_INSTRUCTIONS = """You are a careful biomedical assistant.
@@ -12,8 +13,28 @@ Use only the provided context snippets to answer.
 Cite using bracket numbers that match the snippet headers, e.g., [1], [2].
 If you are not confident the answer is supported by the snippets, say you don't know."""
 
+# Clarifier instructions: converse until the query is ready, then output READY: <query>
+CLARIFIER_INSTRUCTIONS = """You are a clarifying assistant.
+Hold a short conversation to refine the user's intent.
+Ask targeted questions if needed. When the request is specific enough
+to search, output a single line exactly in this format:
+READY: <final concise query>
+Otherwise, reply normally to continue clarifying."""
+
+# --- Prompt templates ---
+# Main RAG prompt includes compact chat history + the retrieval context
 PROMPT = ChatPromptTemplate.from_template(
-    "{system}\n\nQuestion:\n{question}\n\nContext:\n{context}"
+    "{system}\n\n"
+    "Recent chat history (oldest → newest):\n{history}\n\n"
+    "Question:\n{question}\n\n"
+    "Context:\n{context}"
+)
+
+# Clarifier prompt (no context)
+CLARIFIER_PROMPT = ChatPromptTemplate.from_template(
+    "{system}\n\n"
+    "Recent chat history (oldest → newest):\n{history}\n\n"
+    "User:\n{question}"
 )
 
 
@@ -35,6 +56,21 @@ def build_streaming_chain(llm: ChatGoogleGenerativeAI, **kwargs):
     if kwargs:
         llm = llm.bind(**kwargs)
     return PROMPT.partial(system=SYSTEM_INSTRUCTIONS) | llm
+
+
+def build_clarifier_chain(llm: ChatGoogleGenerativeAI, **kwargs):
+    """
+    Conversation-first chain. Produces either normal chat text OR
+    a single 'READY: <query>' line to trigger RAG.
+    (Use .invoke)
+    """
+    if kwargs:
+        llm = llm.bind(**kwargs)
+    return (
+        CLARIFIER_PROMPT.partial(system=CLARIFIER_INSTRUCTIONS)
+        | llm
+        | StrOutputParser()
+    )
 
 
 def render_context(docs: List[Dict[str, Any]]) -> str:

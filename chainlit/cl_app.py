@@ -11,6 +11,7 @@ from app.clients import get_os_client, get_llm, get_http_client
 from app.retrieval import os_search, call_reranker
 from app.chain import (
     build_streaming_chain,
+    build_clarifier_chain,
     render_context,
 )  # build_streaming_chain should support .stream()
 
@@ -40,11 +41,15 @@ def init_data_layer():
 DEFAULT_K = int(os.getenv("SEARCH_K", "50"))
 DEFAULT_TOP_K = int(os.getenv("TOP_K", "10"))
 SESSION_ID = os.getenv("SESSION_ID", str(uuid.uuid4()))
+CHAT_HISTORY_TURNS = int(os.getenv("CHAT_HISTORY_TURNS", "6"))  # last N turns to send
+ALWAYS_RAG = os.getenv("ALWAYS_RAG", "false").lower() == "true"  # bypass clarifier
+READY_PREFIX = os.getenv("READY_PREFIX", "READY:")
 
 # --- Singletons reused by steps ---
 os_client = get_os_client()
 llm = get_llm()
 chain = build_streaming_chain(llm)
+clarifier = build_clarifier_chain(llm)
 http = None  # async HTTP client for reranker
 
 
@@ -92,6 +97,7 @@ def _to_source_shape(d: Dict[str, Any]) -> Dict[str, Any]:
         "pmid": pmid,
         "s3": d.get("s3"),
         "url": url,
+        "metadata": d.get("metadata", {}),
     }
 
 
@@ -113,12 +119,27 @@ def _render_sources_elements(sources: List[Dict[str, Any]]) -> List[cl.Text]:
     return items
 
 
+def _format_history(history: List[Dict[str, str]], turns: int) -> str:
+    """Return a compact text view of the last N user+assistant turns."""
+    trimmed = history[-(turns * 2) :] if turns > 0 else []
+    lines = []
+    for m in trimmed:
+        role = m.get("role", "user")
+        content = _shorten(str(m.get("content", "")), 1500)
+        lines.append(f"{role}: {content}")
+    return "\n".join(lines)
+
+
 @cl.on_chat_start
 async def on_chat_start():
     """Warm up dependencies and greet."""
     global http
     if http is None:
         http = get_http_client()
+    # initialize per-thread chat history
+    cl.user_session.set(
+        "history", []
+    )  # list[{"role": "user"|"assistant", "content": str}]
     await cl.Message(
         content="Welcome to Bio-RAG 👋\nAsk me something biomedical!"
     ).send()
@@ -148,8 +169,11 @@ def auth(username: str, password: str) -> Optional[cl.User]:
 @cl.on_message
 async def on_message(message: cl.Message):
     """
-    Pipeline:
-      Step 1 (Search): show ALL retriever candidates (the exact input to reranker)
+    Clarify-then-RAG Pipeline:
+
+      Phase 0 (Clarify): LLM chats until it emits "READY: <query>".
+                        Users can also force with "/rag <query>".
+      Step 1 (Search): show ALL retriever candidates (input to reranker)
       Step 2 (Rerank): show reranked set
       Then: stream final answer in a single bubble, and render Sources below
     """
@@ -162,12 +186,52 @@ async def on_message(message: cl.Message):
     k = _cap(DEFAULT_K, 1, 200)
     top_k = _cap(DEFAULT_TOP_K, 1, k)
 
+    # --- Phase 0: Clarify (decide whether to run retrieval) ---
+    history: List[Dict[str, str]] = cl.user_session.get("history", [])
+    history_text = _format_history(history, CHAT_HISTORY_TURNS)
+
+    final_query = q
+    do_search = ALWAYS_RAG
+
+    # User can force RAG with a slash command
+    if q.startswith("/rag "):
+        final_query = q[len("/rag ") :].strip() or q
+        do_search = True
+    elif not ALWAYS_RAG:
+        try:
+            clarifier_out = clarifier.invoke(
+                {"question": q, "history": history_text}
+            ).strip()
+        except Exception:
+            clarifier_out = ""
+        if clarifier_out.startswith(READY_PREFIX):
+            final_query = clarifier_out[len(READY_PREFIX) :].strip() or q
+            do_search = True
+        elif clarifier_out:
+            # Continue the conversation without RAG this turn
+            assistant_reply = clarifier_out
+            await cl.Message(
+                content=assistant_reply,
+                author="Assistant",
+                metadata={"session_id": SESSION_ID},
+            ).send()
+            # Persist turn
+            history.append({"role": "user", "content": q})
+            history.append({"role": "assistant", "content": assistant_reply})
+            cl.user_session.set("history", history)
+            return
+
+    # If we decided not to search (shouldn’t happen unless clarifier failed silently), fall back
+    if not do_search and not ALWAYS_RAG:
+        await cl.Message(content="Could you clarify a bit more?").send()
+        return
+
     # ---- STEP 1: SEARCH (show ALL docs passed to reranker) ----
     with cl.Step(name="Search") as search_step:
-        search_step.input = {"query": q, "k": k}
+        search_step.input = {"query": final_query, "k": k}
         try:
             raw: List[Dict[str, Any]] = await anyio.to_thread.run_sync(
-                os_search, os_client, q, k
+                os_search, os_client, final_query, k
             )
             # Emit *all* candidates in the step output (primitives only)
             candidates = [_to_source_shape(doc) for doc in raw]
@@ -180,6 +244,9 @@ async def on_message(message: cl.Message):
 
     if not raw:
         await cl.Message(content="I couldn't find anything relevant.").send()
+        # Persist this user message even if no results
+        history.append({"role": "user", "content": q})
+        cl.user_session.set("history", history)
         return
 
     # ---- STEP 2: RERANK ----
@@ -189,10 +256,10 @@ async def on_message(message: cl.Message):
             if http is None:
                 # Safety fallback
                 temp_http = get_http_client()
-                reranked = await call_reranker(temp_http, q, raw, top_k)
+                reranked = await call_reranker(temp_http, final_query, raw, top_k)
                 await temp_http.aclose()
             else:
-                reranked = await call_reranker(http, q, raw, top_k)
+                reranked = await call_reranker(http, final_query, raw, top_k)
             reranked_view = [_to_source_shape(doc) for doc in reranked]
             rerank_step.metadata = {
                 "returned": len(reranked_view),
@@ -215,7 +282,9 @@ async def on_message(message: cl.Message):
     streamed_any = False
     chunks: List[str] = []
     try:
-        for chunk in chain.stream({"question": q, "context": context}):
+        for chunk in chain.stream(
+            {"question": final_query, "context": context, "history": history_text}
+        ):
             token = _ensure_text(chunk)
             if token:
                 await msg.stream_token(token)
@@ -224,7 +293,9 @@ async def on_message(message: cl.Message):
     except Exception:
         # Fallback to non-streaming
         try:
-            full = chain.invoke({"question": q, "context": context})
+            full = chain.invoke(
+                {"question": final_query, "context": context, "history": history_text}
+            )
             full_text = _ensure_text(full)
             await msg.stream_token(full_text)
             streamed_any = True
@@ -240,6 +311,11 @@ async def on_message(message: cl.Message):
     else:
         msg.content = "".join(chunks)
         await msg.update()
+
+    # Persist this turn to history (user + assistant)
+    history.append({"role": "user", "content": q})
+    history.append({"role": "assistant", "content": msg.content})
+    cl.user_session.set("history", history)
 
     # ---- SOURCES (separate block, not a step) ----
     if reranked:
