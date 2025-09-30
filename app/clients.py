@@ -124,5 +124,5 @@ def get_llm() -> ChatGoogleGenerativeAI:
 
 def get_http_client() -> httpx.AsyncClient:
     # Used for the reranker (HTTP/2 can improve perf if the service supports it)
-    timeout = float(os.getenv("HTTPX_TIMEOUT", "20"))
+    timeout = float(os.getenv("HTTPX_TIMEOUT", "60"))
     return httpx.AsyncClient(timeout=timeout, http2=True)
