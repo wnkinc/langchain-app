@@ -241,17 +241,6 @@ async def on_message(message: cl.Message):
         msg.content = "".join(chunks)
         await msg.update()
 
-    # --- Add a copy button without adding another message ---
-    # Attach a small copyable element to the SAME message so UI stays clean.
-    answer_el = cl.Text(
-        name="Copy answer",
-        content=msg.content,  # this is what the copy icon will copy
-        display="inline",
-    )
-    # Preserve any existing elements and append our copy chip
-    msg.elements = (msg.elements or []) + [answer_el]
-    await msg.update()
-
     # ---- SOURCES (separate block, not a step) ----
     if reranked:
         final_sources = [_to_source_shape(d) for d in reranked]
