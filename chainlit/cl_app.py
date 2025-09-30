@@ -37,8 +37,8 @@ def init_data_layer():
 
 
 # --- Config ---
-DEFAULT_K = int(os.getenv("SEARCH_K", "25"))
-DEFAULT_TOP_K = int(os.getenv("TOP_K", "5"))
+DEFAULT_K = int(os.getenv("SEARCH_K", "50"))
+DEFAULT_TOP_K = int(os.getenv("TOP_K", "10"))
 SESSION_ID = os.getenv("SESSION_ID", str(uuid.uuid4()))
 
 # --- Singletons reused by steps ---
