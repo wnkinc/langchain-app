@@ -22,6 +22,14 @@ The diagram below illustrates the main runtime flow between user, app, OpenSearc
 
 ---
 
+## 🎥 Demo
+
+Here’s Bio-RAG in action answering a biomedical question:
+
+![Bio-RAG Demo](./docs/demo.gif)
+
+---
+
 ## ⚙️ Configuration
 
 The app behavior is controlled via environment variables (set on the EC2 instance):
