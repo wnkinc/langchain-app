@@ -50,4 +50,4 @@ The app behavior is controlled via environment variables (set on the EC2 instanc
 
 ## 🔗 Related Repository
 
-- [Bio-RAG (infra)](../) – AWS infrastructure (Pulumi) that provisions the VPC, EC2 instances, OpenSearch domain, and DynamoDB/S3 used by this app.
+- [Bio-RAG (infra)](https://github.com/wnkinc/Bio-RAG?tab=readme-ov-file) – AWS infrastructure (Pulumi) that provisions the VPC, EC2 instances, OpenSearch domain, and DynamoDB/S3 used by this app.
